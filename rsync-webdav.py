@@ -470,6 +470,8 @@ class AbsractSyncCommand(BaseCommand,ABC):
                 }
                 queue.append(candidate)
                 total_size += size
+                if verbose:
+                    self.info2(f"changed file: {rel_path_str}")
 
         human_size = self.human_readable_size(total_size)
         self.success(f"Found {len(queue)} files to upload for {human_size}.")
