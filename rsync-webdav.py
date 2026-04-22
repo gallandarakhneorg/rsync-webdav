@@ -135,6 +135,9 @@ class BaseTool(ABC):
                     return True
         return False
 
+    def _convert_to_local_fs(self, remote_path : str) -> str:
+        return remote_path.replace('/', os.sep)
+
 
 # ---------- WebDAV connector ----------
 class WebDAVConnector(BaseTool):
@@ -198,9 +201,6 @@ class WebDAVConnector(BaseTool):
             r = (a or '') + '/' + (b or '')
         return r.rstrip('/')
 
-    def __convert_to_local_fs(self, remote_path : str) -> str:
-        return remote_path.replace('/', os.sep)
-
     def get_all_remote_files(self, remote_path: str,
                              excludes : list[str] = [],
                              relative_paths : bool = False, verbose : bool = False) -> list[str]:
@@ -235,7 +235,7 @@ class WebDAVConnector(BaseTool):
                 else:
                     if relative_paths and abs_path.startswith('/'):
                         abs_path = abs_path[1:]
-                    local_fn = self.__convert_to_local_fs(abs_path)
+                    local_fn = self._convert_to_local_fs(abs_path)
                     local_path = Path(local_fn)
                     if not excludes or not self.should_exclude(local_path, None, excludes):
                         all_files.append(local_fn)
@@ -694,7 +694,7 @@ class UpdateCommand(AbsractSyncCommand):
                             current_state=current_state,
                             dry_run=False,
                             verbose=self.args.verbose)
-            self.success(f"{len(new_state)} hash values saved with {new_files} new hash values from remote files.")
+            self.success(f"{len(current_state)} hash values saved with {new_files} new hash values from remote files.")
 
 
 # ---------- Main ----------
