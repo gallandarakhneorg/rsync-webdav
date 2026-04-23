@@ -32,20 +32,22 @@ import getpass
 import configparser
 import hashlib
 import json
+from dataclasses import dataclass
+import traceback
 from tqdm import tqdm
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Dict, Optional, Tuple, override, Any
+from typing import override
 import fnmatch
-from colorama import init, Fore, Style
+from colorama import Fore, Style
 from webdav3.client import Client
-from webdav3.exceptions import RemoteResourceNotFound, WebDavException
+from webdav3.exceptions import WebDavException
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---------- Configuration ----------
 SCRIPT_LAUNCH_NAME = os.path.basename(sys.argv[0])
-m = re.match(r'rsync\-(.+)', SCRIPT_LAUNCH_NAME, re.S + re.DOTALL)
+m = re.match(r'rsync-(.+)', SCRIPT_LAUNCH_NAME, re.S + re.DOTALL)
 if m:
     DEFAULT_CONFIG_NAME : str = m.group(1).strip('.py').strip()
 else:
@@ -60,6 +62,7 @@ DEFAULT_EXCLUDES : list[str] = []
 # ---------- Base Logger ----------
 class BaseTool(ABC):
 
+    # noinspection PyMethodMayBeStatic
     def error(self, *messages : str):
         """
         Show up an error message. This function exists the script with return code to 255.
@@ -68,6 +71,14 @@ class BaseTool(ABC):
             print(Fore.RED + f"ERROR  : {message}" + Style.RESET_ALL)
         sys.exit(255)
 
+    # noinspection PyMethodMayBeStatic
+    def error_tqdm(self, pbar : tqdm, message : str):
+        """
+        Show up an error message before the progress bar. This function exists the script with return code to 255.
+        """
+        pbar.write(Fore.RED + f"ERROR  : {message}" + Style.RESET_ALL)
+
+    # noinspection PyMethodMayBeStatic
     def info(self, *messages : str):
         """
         Show up an information message.
@@ -75,6 +86,14 @@ class BaseTool(ABC):
         for message in messages:
             print(Fore.BLUE + f"INFO   : {message}" + Style.RESET_ALL)
 
+    # noinspection PyMethodMayBeStatic
+    def info_tqdm(self, pbar : tqdm, message : str):
+        """
+        Show up an information message before the progress bar. This function exists the script with return code to 255.
+        """
+        pbar.write(Fore.BLUE + f"INFO   : {message}" + Style.RESET_ALL)
+
+    # noinspection PyMethodMayBeStatic
     def info2(self, *messages : str):
         """
         Show up a level-2 information message.
@@ -82,6 +101,7 @@ class BaseTool(ABC):
         for message in messages:
             print(Fore.CYAN + "INFO   :" + Style.RESET_ALL + f"    {message}")
 
+    # noinspection PyMethodMayBeStatic
     def success(self, *messages : str):
         """
         Show up a success message.
@@ -89,6 +109,7 @@ class BaseTool(ABC):
         for message in messages:
             print(Fore.GREEN + "SUCCESS:" + Style.RESET_ALL + f" {message}")
 
+    # noinspection PyMethodMayBeStatic
     def human_readable_size(self, size_bytes: int) -> str:
         """
         Convert a size in bytes to a human-readable string using binary prefixes (1 KB = 1024 bytes).
@@ -113,6 +134,7 @@ class BaseTool(ABC):
         else:
             return f"{size:.1f} {units[unit_index]}"
 
+    # noinspection PyMethodMayBeStatic
     def should_exclude(self, path: Path, root: Path | None, patterns: list[str]) -> bool:
         """
         Check if a file or directory should be excluded.
@@ -135,6 +157,7 @@ class BaseTool(ABC):
                     return True
         return False
 
+    # noinspection PyMethodMayBeStatic
     def _convert_to_local_fs(self, remote_path : str) -> str:
         return remote_path.replace('/', os.sep)
 
@@ -151,7 +174,7 @@ class WebDAVConnector(BaseTool):
         parsed = urlparse(url)
         path = parsed.path
         self.__url = url
-        self.__remote_root = parsed.path.rstrip('/')
+        self.__remote_root = path.rstrip('/')
         self.__login = login
         self.__client = Client(client_options)
 
@@ -192,8 +215,10 @@ class WebDAVConnector(BaseTool):
             if verbose:
                 self.info2(f"remote file deleted: {remote_path}")
         except WebDavException as e:
-            self.error(f"Fail to delete {remote_path}: {e}")
+            if 'not found' not in str(e):
+                self.error(f"Fail to delete {remote_path}: {e}")
 
+    # noinspection PyMethodMayBeStatic
     def __join(self, a : str, b : str) -> str:
         if a and b and (a.endswith('/') or b.startswith('/')):
             r = a + b
@@ -202,9 +227,12 @@ class WebDAVConnector(BaseTool):
         return r.rstrip('/')
 
     def get_all_remote_files(self, remote_path: str,
-                             excludes : list[str] = [],
+                             excludes : list[str] = None,
                              relative_paths : bool = False, verbose : bool = False) -> list[str]:
         """List all files on a WebDAV server."""
+        if excludes is None:
+            excludes = list()
+
         root_len = len(self.__remote_root)
 
         queue = deque()
@@ -286,6 +314,7 @@ class BaseCommand(BaseTool, ABC):
         else:
             if config is None:
                 config = self.load_config()
+            assert config is not None
             webdav_section = config['webdav']
             password = webdav_section.get('password', '')
             if not password:
@@ -297,7 +326,7 @@ class BaseCommand(BaseTool, ABC):
 # ---------- Show Command ----------
 class ShowCommand(BaseCommand):
 
-    def __init__(self, args : argparse.ArgumentParser, config_file : Path = DEFAULT_CONFIG_FILE):
+    def __init__(self, args : argparse.Namespace, config_file : Path = DEFAULT_CONFIG_FILE):
         super().__init__(args, config_file)
 
     def show_config(self, config : configparser.ConfigParser | None = None):
@@ -331,7 +360,7 @@ class ShowCommand(BaseCommand):
 # ---------- Delete Command ----------
 class DeleteCommand(BaseCommand):
 
-    def __init__(self, args : argparse.ArgumentParser, config_file : Path = DEFAULT_CONFIG_FILE):
+    def __init__(self, args : argparse.Namespace, config_file : Path = DEFAULT_CONFIG_FILE):
         super().__init__(args, config_file)
 
     @override
@@ -347,7 +376,7 @@ class DeleteCommand(BaseCommand):
 # ---------- Create Command ----------
 class CreateCommand(BaseCommand):
 
-    def __init__(self, args : argparse.ArgumentParser, config_file : Path = DEFAULT_CONFIG_FILE):
+    def __init__(self, args : argparse.Namespace, config_file : Path = DEFAULT_CONFIG_FILE):
         super().__init__(args, config_file)
 
     @override
@@ -377,22 +406,31 @@ class CreateCommand(BaseCommand):
             config.write(f)
         self.success(f"Configuration saved to {self.config_file.name}")
 
-
+# ---------- CandidateDescription ----------
+@dataclass
+class CandidateDescription:
+    relative_path : str
+    local_path : Path
+    remote_path : str
+    size: int
+    reason : str = ''
 
 # ---------- Abstract Sync Command ----------
 class AbsractSyncCommand(BaseCommand,ABC):
 
-    def __init__(self, args : argparse.ArgumentParser, config_file : Path = DEFAULT_CONFIG_FILE):
+    def __init__(self, args : argparse.Namespace, config_file : Path = DEFAULT_CONFIG_FILE):
         super().__init__(args, config_file)
 
-    def _load_state(self, state_path: Path) -> Dict:
+    # noinspection PyMethodMayBeStatic
+    def _load_state(self, state_path: Path) -> dict[str,dict[str,int|float|str]]:
         """Load the state JSON file. Returns empty dict if not exists."""
         if state_path.exists():
             with open(state_path, "r") as f:
                 return json.load(f)
         return {}
 
-    def _save_state(self, state_path: Path, state: dict):
+    # noinspection PyMethodMayBeStatic
+    def _save_state(self, state_path: Path, state: dict[str,dict[str,int|float|str]]):
         """Save the state dictionary to JSON file."""
         with open(state_path, "w") as f:
             json.dump(state, f, indent=2)
@@ -408,11 +446,12 @@ class AbsractSyncCommand(BaseCommand,ABC):
         return stat.st_size, stat.st_mtime, file_hash
 
     def _analyze_local_files(self, remote_root : str, local_root : Path, excludes : list[str],
-                             state : dict, verbose: bool = False) -> tuple[list[dict[str,str|int|Path]],dict,int]:
+                             state : dict[str,dict[str,int|float|str]],
+                             verbose: bool = False) -> tuple[list[CandidateDescription],dict[str,dict[str,int|float|str]],int]:
         """Phase 1: Walk local files and upload changed/new files"""
         self.info("Analyzing local files...")
-        queue : list[dict[str,str|Path]] = list()
-        current_state = {}
+        queue : list[CandidateDescription] = list()
+        current_state : dict[str,dict[str,int|float|str]] = {}
         total_size = 0
         for root, dirs, files in os.walk(local_root):
             current_path = Path(root)
@@ -461,13 +500,12 @@ class AbsractSyncCommand(BaseCommand,ABC):
                 remote_path = os.path.join(remote_root, rel_path_str).replace("\\", "/")
                 reason = "new file" if not old_record else "new content"
 
-                candidate = {
-                    'rel': rel_path_str,
-                    'local': local_file,
-                    'remote': remote_path,
-                    'reason': reason,
-                    'size' : size,
-                }
+                candidate = CandidateDescription(
+                    relative_path=rel_path_str,
+                    local_path=local_file,
+                    remote_path=remote_path,
+                    reason=reason,
+                    size=size)
                 queue.append(candidate)
                 total_size += size
                 if verbose:
@@ -477,53 +515,65 @@ class AbsractSyncCommand(BaseCommand,ABC):
         self.success(f"Found {len(queue)} files to upload for {human_size}.")
         return queue, current_state, total_size
 
-    def __upload_with_progress(self, connector : WebDAVConnector, candidate : dict[str,str|int|Path]):
-        desc = candidate['rel'][-60:]
-        with tqdm(total=candidate['size'], unit="B", unit_scale=True, leave=False, desc=desc) as pbar_file:
-            def progress_callback(current, total):
-                nonlocal pbar_file
-                pbar_file.n = current
-                pbar_file.refresh()  # force display update
-            connector.upload_file(local_file=candidate['local'],
-                                  remote_path=candidate['remote'],
-                                  progress=progress_callback)
+    # noinspection PyMethodMayBeStatic
+    def __upload_with_progress(self, connector : WebDAVConnector, candidate : CandidateDescription, pbar_files : tqdm):
+        desc = candidate.relative_path[-60:]
+        try:
+            with tqdm(total=candidate.size, unit="B", unit_scale=True, leave=False, desc=desc) as pbar_file:
+                def progress_callback(current,total):
+                    nonlocal pbar_file
+                    pbar_file.n = current
+                    pbar_file.refresh()  # force display update
+                connector.upload_file(local_file=candidate.local_path,
+                                      remote_path=candidate.remote_path,
+                                      progress=progress_callback)
+        except BaseException as e:
+            details = traceback.format_exc()
+            self.error_tqdm(pbar_files, f"Cannot upload {candidate.local_path} for of exception of type {type(e).__name__}: {e}\n{details}")
 
-    def _upload(self, connector : WebDAVConnector, queue : list[dict[str,str|Path]], dry_run : bool = False,
-                verbose : bool = False, workers : int = 5):
+    def _upload(self, connector : WebDAVConnector, queue : list[CandidateDescription], dry_run : bool = False,
+                workers : int = 5):
         """Phase 2: Upload files to the remote server."""
         self.info("Uploading files...")
         with tqdm(total=len(queue), unit="file", desc="", leave=False) as pbar_files:
-            if workers > 1 and not dry_run:
-                pbar_files.set_description('')
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    # Submit all upload tasks to the executor
-                    future_to_file = {
-                        executor.submit(self.__upload_with_progress, connector, candidate): candidate['local']
-                        for candidate in queue
-                    }
+            try:
+                if workers > 1 and not dry_run:
+                    pbar_files.set_description('')
+                    with ThreadPoolExecutor(max_workers=workers) as executor:
+                        # Submit all upload tasks to the executor
+                        future_to_file = {
+                            executor.submit(self.__upload_with_progress, connector, candidate, pbar_files): candidate.local_path
+                            for candidate in queue
+                        }
 
-                    # Process results as they complete
-                    for future in as_completed(future_to_file):
-                        local_file = future_to_file[future]
-                        try:
-                            result = future.result()
-                            pbar_files.update(1)
-                        except Exception as e:
-                            self.error(f'{local_file} generated an exception: {e}')
-            else:
-                for candidate in queue:
-                    pbar_files.set_description(candidate['rel'][-60:])
-                    if not dry_run:
-                        self.__upload_with_progress(connector, candidate)
-                    pbar_files.update(1)
-            pbar_files.set_description('')
+                        # Process results as they complete
+                        for future in as_completed(future_to_file):
+                            local_file = future_to_file[future]
+                            try:
+                                future.result()
+                                pbar_files.update(1)
+                                self.info_tqdm(pbar_files, f'{local_file} transferred')
+                            except Exception as e:
+                                details = traceback.format_exc()
+                                self.error_tqdm(pbar_files, f'{local_file} generated an exception of type {type(e).__name__}: {e}\n{details}')
+                else:
+                    for candidate in queue:
+                        pbar_files.set_description(candidate.relative_path[-60:])
+                        if not dry_run:
+                            self.__upload_with_progress(connector, candidate)
+                        pbar_files.update(1)
+                pbar_files.set_description('')
+            except BaseException as e:
+                details = traceback.format_exc()
+                self.error_tqdm(pbar_files, f"Cannot upload files because of exception of type {type(e).__name__}: {e}\n{details}")
         if dry_run:
             self.success(f"{len(queue)} files are uploadable (DRY RUN mode)")
         else:
             self.success(f"{len(queue)} files were uploaded")
 
 
-    def _delete_remote_files(self, connector : WebDAVConnector, state : dict, current_state : dict,
+    def _delete_remote_files(self, connector : WebDAVConnector, state : dict,
+                             current_state : dict[str,dict[str,int|float|str]],
                              remote_root : str, dry_run : bool = False, verbose : bool = False):
         """Phase 3: Handle deletions on remote server."""
         self.info("Deleting unnecessary remote files...")
@@ -539,6 +589,7 @@ class AbsractSyncCommand(BaseCommand,ABC):
                     if not dry_run:
                         connector.delete_remote_file(remote_path, verbose)
                     nb_deleted += 1
+                    self.info_tqdm(pbar, f"{remote_path} deleted")
                 pbar.update(1)
             pbar.set_description('')
         if dry_run:
@@ -547,7 +598,8 @@ class AbsractSyncCommand(BaseCommand,ABC):
             self.success(f"{nb_deleted} file(s) were deleted.")
 
 
-    def _save_hash(self, state_path : str, current_state : dict, dry_run : bool = False, verbose : bool = False):
+    def _save_hash(self, state_path : Path, current_state : dict[str,dict[str,int|float|str]],
+                   dry_run : bool = False):
         """Phase 3: Save updated state."""
         if not dry_run:
             self._save_state(state_path, current_state)
@@ -583,7 +635,6 @@ class AbsractSyncCommand(BaseCommand,ABC):
         self._upload(connector=connector,
                      queue=queue,
                      dry_run=dry_run,
-                     verbose=verbose,
                      workers=workers)
 
         if delete:
@@ -596,11 +647,10 @@ class AbsractSyncCommand(BaseCommand,ABC):
 
         self._save_hash(state_path=state_path,
                         current_state=current_state,
-                        dry_run=dry_run,
-                        verbose=verbose)
+                        dry_run=dry_run)
 
 
-    def connect(self) -> tuple[WebDAVConnector, str, str, list[str]]:
+    def connect(self) -> tuple[WebDAVConnector, Path, str, list[str]]:
         """ Start a connection to the WebDav server."""
         config = self.load_config()
         webdav_section = config['webdav']
@@ -631,7 +681,7 @@ class AbsractSyncCommand(BaseCommand,ABC):
 # ---------- Sync Command ----------
 class SyncCommand(AbsractSyncCommand):
 
-    def __init__(self, args : argparse.ArgumentParser, config_file : Path = DEFAULT_CONFIG_FILE):
+    def __init__(self, args : argparse.Namespace, config_file : Path = DEFAULT_CONFIG_FILE):
         super().__init__(args, config_file)
 
     @override
@@ -658,7 +708,7 @@ class SyncCommand(AbsractSyncCommand):
 # ---------- Update Command ----------
 class UpdateCommand(AbsractSyncCommand):
 
-    def __init__(self, args : argparse.ArgumentParser, config_file : Path = DEFAULT_CONFIG_FILE):
+    def __init__(self, args : argparse.Namespace, config_file : Path = DEFAULT_CONFIG_FILE):
         super().__init__(args, config_file)
 
     @override
@@ -692,8 +742,7 @@ class UpdateCommand(AbsractSyncCommand):
         else:
             self._save_hash(state_path=state_path,
                             current_state=current_state,
-                            dry_run=False,
-                            verbose=self.args.verbose)
+                            dry_run=False)
             self.success(f"{len(current_state)} hash values saved with {new_files} new hash values from remote files.")
 
 
@@ -703,7 +752,7 @@ def main():
     subparsers = parser.add_subparsers(dest='command', required=True)
 
     # Command: delete
-    parser_create = subparsers.add_parser('delete', help="Delete configuration")
+    subparsers.add_parser('delete', help="Delete configuration")
 
     # Command: create
     parser_create = subparsers.add_parser('create', help="Create configuration")
@@ -714,7 +763,7 @@ def main():
     parser_create.add_argument('--excludes', nargs='*', help="Exclusion patterns (space-separated)")
 
     # Command: show
-    parser_create = subparsers.add_parser('show', help="Show configuration")
+    subparsers.add_parser('show', help="Show configuration")
 
     # Command: sync
     parser_sync = subparsers.add_parser('sync', help="Run synchronization")
@@ -723,16 +772,16 @@ def main():
     parser_sync.add_argument('--nodelete', action='store_true', help="Do not delete remote files not present locally")
     parser_sync.add_argument('--dryrun', action='store_true', help="Simulate without making changes")
     parser_sync.add_argument('--verbose', '-v', action='store_true', help="Show detailed output")
-    parser_sync.add_argument('--workers', type=int, default=5, help="Numbr of parallel workers (default: 5)")
+    parser_sync.add_argument('--workers', type=int, default=5, help="Number of parallel workers (default: 5)")
     parser_sync.add_argument('--excludes', nargs='*', help="Override exclusion patterns")
 
     # Command: update
-    parser_sync = subparsers.add_parser('update', help="Update the local hash values from the remote server")
-    parser_sync.add_argument('--password', help="Password to pass to the WebDAV server")
-    parser_sync.add_argument('--remote-root', default="", help="Remote root path (default: /)")
-    parser_sync.add_argument('--dryrun', action='store_true', help="Simulate without making changes")
-    parser_sync.add_argument('--verbose', '-v', action='store_true', help="Show detailed output")
-    parser_sync.add_argument('--excludes', nargs='*', help="Override exclusion patterns")
+    parser_update = subparsers.add_parser('update', help="Update the local hash values from the remote server")
+    parser_update.add_argument('--password', help="Password to pass to the WebDAV server")
+    parser_update.add_argument('--remote-root', default="", help="Remote root path (default: /)")
+    parser_update.add_argument('--dryrun', action='store_true', help="Simulate without making changes")
+    parser_update.add_argument('--verbose', '-v', action='store_true', help="Show detailed output")
+    parser_update.add_argument('--excludes', nargs='*', help="Override exclusion patterns")
 
     args = parser.parse_args()
 
