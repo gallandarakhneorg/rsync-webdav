@@ -536,6 +536,7 @@ class AbsractSyncCommand(BaseCommand,ABC):
         """Phase 2: Upload files to the remote server."""
         self.info("Uploading files...")
         with tqdm(total=len(queue), unit="file", desc="", leave=False) as pbar_files:
+            future_to_file = {}
             try:
                 if workers > 1 and not dry_run:
                     pbar_files.set_description('')
@@ -563,6 +564,11 @@ class AbsractSyncCommand(BaseCommand,ABC):
                             self.__upload_with_progress(connector, candidate)
                         pbar_files.update(1)
                 pbar_files.set_description('')
+            except KeyboardInterrupt:
+                for future in future_to_file:
+                    future.cancel()
+                self.error_tqdm(pbar_files, "Program interrupted by the user. All uploading threads stopped.")
+                sys.exit(255)
             except BaseException as e:
                 details = traceback.format_exc()
                 self.error_tqdm(pbar_files, f"Cannot upload files because of exception of type {type(e).__name__}: {e}\n{details}")
@@ -748,61 +754,64 @@ class UpdateCommand(AbsractSyncCommand):
 
 # ---------- Main ----------
 def main():
-    parser = argparse.ArgumentParser(description="Synchronize local folder to WebDAV using local hashing")
-    subparsers = parser.add_subparsers(dest='command', required=True)
+    try:
+        parser = argparse.ArgumentParser(description="Synchronize local folder to WebDAV using local hashing")
+        subparsers = parser.add_subparsers(dest='command', required=True)
 
-    # Command: delete
-    subparsers.add_parser('delete', help="Delete configuration")
+        # Command: delete
+        subparsers.add_parser('delete', help="Delete configuration")
 
-    # Command: create
-    parser_create = subparsers.add_parser('create', help="Create configuration")
-    parser_create.add_argument('--url', help="WebDAV server URL")
-    parser_create.add_argument('--user', help="Username")
-    parser_create.add_argument('--password', help="Password (insecure, better leave empty to prompt)")
-    parser_create.add_argument('--source', help="Local source path (default: ./)")
-    parser_create.add_argument('--excludes', nargs='*', help="Exclusion patterns (space-separated)")
+        # Command: create
+        parser_create = subparsers.add_parser('create', help="Create configuration")
+        parser_create.add_argument('--url', help="WebDAV server URL")
+        parser_create.add_argument('--user', help="Username")
+        parser_create.add_argument('--password', help="Password (insecure, better leave empty to prompt)")
+        parser_create.add_argument('--source', help="Local source path (default: ./)")
+        parser_create.add_argument('--excludes', nargs='*', help="Exclusion patterns (space-separated)")
 
-    # Command: show
-    subparsers.add_parser('show', help="Show configuration")
+        # Command: show
+        subparsers.add_parser('show', help="Show configuration")
 
-    # Command: sync
-    parser_sync = subparsers.add_parser('sync', help="Run synchronization")
-    parser_sync.add_argument('--password', help="Password to pass to the WebDAV server")
-    parser_sync.add_argument('--remote-root', default="", help="Remote root path (default: /)")
-    parser_sync.add_argument('--nodelete', action='store_true', help="Do not delete remote files not present locally")
-    parser_sync.add_argument('--dryrun', action='store_true', help="Simulate without making changes")
-    parser_sync.add_argument('--verbose', '-v', action='store_true', help="Show detailed output")
-    parser_sync.add_argument('--workers', type=int, default=5, help="Number of parallel workers (default: 5)")
-    parser_sync.add_argument('--excludes', nargs='*', help="Override exclusion patterns")
+        # Command: sync
+        parser_sync = subparsers.add_parser('sync', help="Run synchronization")
+        parser_sync.add_argument('--password', help="Password to pass to the WebDAV server")
+        parser_sync.add_argument('--remote-root', default="", help="Remote root path (default: /)")
+        parser_sync.add_argument('--nodelete', action='store_true', help="Do not delete remote files not present locally")
+        parser_sync.add_argument('--dryrun', action='store_true', help="Simulate without making changes")
+        parser_sync.add_argument('--verbose', '-v', action='store_true', help="Show detailed output")
+        parser_sync.add_argument('--workers', type=int, default=5, help="Number of parallel workers (default: 5)")
+        parser_sync.add_argument('--excludes', nargs='*', help="Override exclusion patterns")
 
-    # Command: update
-    parser_update = subparsers.add_parser('update', help="Update the local hash values from the remote server")
-    parser_update.add_argument('--password', help="Password to pass to the WebDAV server")
-    parser_update.add_argument('--remote-root', default="", help="Remote root path (default: /)")
-    parser_update.add_argument('--dryrun', action='store_true', help="Simulate without making changes")
-    parser_update.add_argument('--verbose', '-v', action='store_true', help="Show detailed output")
-    parser_update.add_argument('--excludes', nargs='*', help="Override exclusion patterns")
+        # Command: update
+        parser_update = subparsers.add_parser('update', help="Update the local hash values from the remote server")
+        parser_update.add_argument('--password', help="Password to pass to the WebDAV server")
+        parser_update.add_argument('--remote-root', default="", help="Remote root path (default: /)")
+        parser_update.add_argument('--dryrun', action='store_true', help="Simulate without making changes")
+        parser_update.add_argument('--verbose', '-v', action='store_true', help="Show detailed output")
+        parser_update.add_argument('--excludes', nargs='*', help="Override exclusion patterns")
 
-    args = parser.parse_args()
+        args = parser.parse_args()
 
-    if args.command == 'create':
-        cmd = CreateCommand(args)
-    elif args.command == 'delete':
-        cmd = DeleteCommand(args)
-    elif args.command == 'show':
-        cmd = ShowCommand(args)
-    elif args.command == 'sync':
-        cmd = SyncCommand(args)
-    elif args.command == 'update':
-        cmd = UpdateCommand(args)
-    else:
-        parser.print_help()
-        cmd = None
+        if args.command == 'create':
+            cmd = CreateCommand(args)
+        elif args.command == 'delete':
+            cmd = DeleteCommand(args)
+        elif args.command == 'show':
+            cmd = ShowCommand(args)
+        elif args.command == 'sync':
+            cmd = SyncCommand(args)
+        elif args.command == 'update':
+            cmd = UpdateCommand(args)
+        else:
+            parser.print_help()
+            cmd = None
 
-    if cmd is not None:
-        cmd.run()
-        sys.exit(0)
-    else:
+        if cmd is not None:
+            cmd.run()
+            sys.exit(0)
+        else:
+            sys.exit(255)
+    except KeyboardInterrupt:
         sys.exit(255)
 
 if __name__ == "__main__":
